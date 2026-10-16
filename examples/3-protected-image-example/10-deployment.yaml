@@ -1,0 +1,51 @@
+# Runs the PRIVATE image darktohka/protected-image (the Bun + Hono app built in
+# examples/bun-hono-example).
+#
+# The repository is private, so this Pod can only pull it because of the
+# imagePullSecret named below -- that is the whole point of this example.  Delete
+# the `imagePullSecrets:` block and the Pod goes to ImagePullBackOff instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: protected-image
+  namespace: dani
+  labels:
+    app: protected-image
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: protected-image }
+  template:
+    metadata:
+      labels: { app: protected-image }
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: app
+          image: darktohka/protected-image:latest
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits:   { cpu: 250m, memory: 256Mi }

@@ -1,0 +1,121 @@
+# Immich database = PostgreSQL 14 + VectorChord + pgvector.
+#
+# This is the Immich-specific image (the stock `postgres` image does NOT have the
+# vector extensions Immich needs).  It installs and preloads VectorChord and
+# pgvector; Immich itself creates the extensions on first boot, which works
+# because POSTGRES_USER is a superuser in this cluster.
+#
+# Deployment (not StatefulSet) on a local-path PVC, like the other examples in
+# this repo.  strategy: Recreate is required: the volume is ReadWriteOnce and
+# node-local, so a RollingUpdate would try to mount it on a second node and hang.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-postgres-data
+  namespace: dani
+  labels:
+    app.kubernetes.io/part-of: immich
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: dani
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: immich
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # Pinned by digest to match the official compose file exactly.
+          image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: immich
+            - name: POSTGRES_DB
+              value: immich
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: immich-secrets
+                  key: DB_PASSWORD
+            # Only takes effect on the very first initdb of an empty volume.
+            - name: POSTGRES_INITDB_ARGS
+              value: "--data-checksums"
+            - name: TZ
+              value: "Etc/UTC"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "immich", "-d", "immich"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "immich", "-d", "immich"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1000m"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # compose `shm_size: 128mb` -> memory-backed /dev/shm
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: immich-postgres-data
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: dani
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: immich
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

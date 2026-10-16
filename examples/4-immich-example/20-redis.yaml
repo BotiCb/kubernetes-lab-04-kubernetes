@@ -1,0 +1,81 @@
+# Immich job queue.  compose uses valkey:9; here named `redis`, which is what the
+# Immich server looks for by default.
+#
+# Valkey holds no authoritative data (all state lives in PostgreSQL and on the
+# media volume) -- it only carries the BullMQ job queue -- so a node-local
+# emptyDir is enough; losing it just re-enqueues/loses in-flight jobs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: dani
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: immich
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: TZ
+              value: "Etc/UTC"
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: dani
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: immich
+spec:
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis

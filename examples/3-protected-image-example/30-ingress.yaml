@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: protected-image
+  namespace: dani
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: protected.dani.sapi.click
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: protected-image
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - protected.dani.sapi.click

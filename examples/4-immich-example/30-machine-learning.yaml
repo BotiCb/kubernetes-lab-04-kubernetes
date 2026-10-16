@@ -1,0 +1,92 @@
+# Immich machine learning service: CLIP smart-search + face detection inference.
+#
+# Stateless HTTP service on :3003 that only the Immich server calls -- it needs
+# neither PostgreSQL nor Redis.  The model cache lives on an emptyDir (models are
+# re-downloaded on a cold start); swap it for a PVC if you want to keep them.
+#
+# The Service is named `immich-machine-learning`, which is the default the server
+# uses for IMMICH_MACHINE_LEARNING_URL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: immich-machine-learning
+  namespace: dani
+  labels:
+    app: immich-machine-learning
+    app.kubernetes.io/part-of: immich
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: immich-machine-learning
+  template:
+    metadata:
+      labels:
+        app: immich-machine-learning
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: immich-machine-learning
+          image: ghcr.io/immich-app/immich-machine-learning:release
+          ports:
+            - name: http
+              containerPort: 3003
+          env:
+            - name: TZ
+              value: "Etc/UTC"
+            - name: MACHINE_LEARNING_MODEL_REVISION
+              value: "v2"
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1000m"
+              memory: 3Gi
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-machine-learning
+  namespace: dani
+  labels:
+    app: immich-machine-learning
+    app.kubernetes.io/part-of: immich
+spec:
+  selector:
+    app: immich-machine-learning
+  ports:
+    - name: http
+      port: 3003
+      targetPort: http

@@ -1,0 +1,11 @@
+{
+  "name": "bun-hono-example",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "hono": "^4"
+  }
+}

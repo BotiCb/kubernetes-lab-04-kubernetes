@@ -1,0 +1,77 @@
+# nginx owned by a bare ReplicaSet -- the middle ground between
+# ../1-nginx-example-pod (no controller) and ../2-nginx-example-deployment.
+#
+# A ReplicaSet only does ONE thing: it keeps `replicas` Pods matching its label
+# selector alive.  It has no rollout history, no rolling update strategy, and no
+# `kubectl rollout undo` -- which is exactly the gap a Deployment fills.
+#
+# In fact you rarely create one by hand: a Deployment creates and owns a
+# ReplicaSet for you (`kubectl get rs` after applying ../2-*).  We declare one
+# here so you can see what that object actually looks like.
+#
+# Exposed at https://replicaset.dani.sapi.click
+#
+# No TLS annotation is needed: Traefik obtains a Let's Encrypt certificate for
+# the Ingress host automatically, and external-dns publishes the A record.
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: nginx
+  namespace: dani
+  labels: { app: nginx-rs }
+spec:
+  # 2 so you can watch the ReplicaSet replace a Pod you delete.
+  replicas: 2
+  selector:
+    matchLabels: { app: nginx-rs }
+  template:
+    metadata:
+      labels: { app: nginx-rs }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          # Explicit limits so two replicas fit the tenant ResourceQuota.
+          # A container with no `resources` gets the namespace LimitRange default
+          # (500m CPU / 512Mi), and every container's *limit* counts against the
+          # quota's `limits.cpu` / `limits.memory` -- so a 2-replica set without
+          # these would need 1000m and be rejected with `FailedCreate:
+          # exceeded quota ... limits.cpu`.
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits:   { cpu: 100m, memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-rs
+  namespace: dani
+spec:
+  selector: { app: nginx-rs }
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-rs
+  namespace: dani
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: replicaset.dani.sapi.click
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nginx-rs
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - replicaset.dani.sapi.click
