@@ -1,0 +1,121 @@
+# My own app from Lab 1 -- the notes-api (TypeScript / NestJS) -- pulled from the
+# PRIVATE Docker Hub repository boti13/protected-image (tag `notes-api`) and
+# published at https://myapp.nboti.sapi.click
+#
+# The image is multi-arch (linux/amd64 + linux/arm64), so it starts on the arm64
+# workers.  It can only be pulled because of the `dockerhub-pull` imagePullSecret,
+# which is created with kubectl (it holds a Docker Hub token, so it is NOT
+# committed here):
+#
+#   kubectl -n nboti create secret docker-registry dockerhub-pull \
+#     --docker-server=https://index.docker.io/v1/ \
+#     --docker-username=boti13 \
+#     --docker-password=<read-only-token> \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# The notes live in a JSON file under DATA_DIR=/data, so /data is a PVC and the
+# notes survive a Pod restart.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: myapp-data
+  namespace: nboti
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: nboti
+  labels:
+    app: myapp
+spec:
+  replicas: 1
+  # The ReadWriteOnce volume can only be mounted by one Pod at a time, so stop
+  # the old Pod before starting the new one on a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: myapp }
+  template:
+    metadata:
+      labels: { app: myapp }
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-pull
+      securityContext:
+        # The image runs as the unprivileged `node` user from node:alpine.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: myapp
+          image: boti13/protected-image:notes-api
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: DATA_DIR
+              value: /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits:   { cpu: 250m, memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: myapp-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+  namespace: nboti
+spec:
+  selector: { app: myapp }
+  ports:
+    - port: 80
+      targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp
+  namespace: nboti
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: myapp.nboti.sapi.click
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - myapp.nboti.sapi.click

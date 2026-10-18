@@ -27,6 +27,113 @@ This lab closes that loop. You will:
 
 ---
 
+## My submission (tenant `nboti`)
+
+My app is published at: <https://myapp.nboti.sapi.click>
+
+| What | URL | Source |
+|---|---|---|
+| **My app** - the Lab 1 notes-api, from a **private** image | <https://myapp.nboti.sapi.click/notes> | [`myapp/myapp.yaml`](myapp/myapp.yaml) |
+| nginx as a bare Pod | <https://pod.nboti.sapi.click> | [`examples/1-nginx-example-pod/`](examples/1-nginx-example-pod) |
+| nginx as a Deployment | <https://deploy.nboti.sapi.click> | [`examples/2-nginx-example-deployment/`](examples/2-nginx-example-deployment) |
+| nginx as a ReplicaSet | <https://replicaset.nboti.sapi.click> | [`examples/3-nginx-example-replicaset/`](examples/3-nginx-example-replicaset) |
+| bun-hono example, from a **private** image | <https://protected.nboti.sapi.click> | [`examples/3-protected-image-example/`](examples/3-protected-image-example) |
+
+Both private images live in the **private** Docker Hub repository
+`boti13/protected-image`, built for `linux/amd64` + `linux/arm64`:
+
+| Tag | Built from |
+|---|---|
+| `boti13/protected-image:latest` | [`examples/bun-hono-example/`](examples/bun-hono-example) |
+| `boti13/protected-image:notes-api` | `notes-api/` from my Lab 1 repository |
+
+```sh
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t boti13/protected-image:latest --push examples/bun-hono-example
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t boti13/protected-image:notes-api --push ../kubernetes-lab-01-docker/notes-api
+```
+
+### Proof that the repository is private
+
+```console
+$ curl -s -o /dev/null -w "%{http_code}" https://hub.docker.com/v2/repositories/boti13/protected-image/
+404
+
+$ TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:boti13/protected-image:pull" | jq -r .token)
+$ curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/vnd.oci.image.index.v1+json" \
+    https://registry-1.docker.io/v2/boti13/protected-image/manifests/notes-api
+401
+
+$ docker buildx imagetools inspect boti13/protected-image:notes-api   # logged in
+  Platform:    linux/amd64
+  Platform:    linux/arm64
+```
+
+### Proof that the cluster pulls it with an `imagePullSecret`
+
+The `dockerhub-pull` Secret holds a **read-only** Docker Hub token, so it is
+created with `kubectl` and not committed:
+
+```console
+$ kubectl -n nboti create secret docker-registry dockerhub-pull \
+    --docker-server=https://index.docker.io/v1/ \
+    --docker-username=boti13 \
+    --docker-password=<read-only-token> \
+    --dry-run=client -o yaml | kubectl apply -f -
+secret/dockerhub-pull created
+
+$ kubectl get secret dockerhub-pull
+NAME             TYPE                             DATA   AGE
+dockerhub-pull   kubernetes.io/dockerconfigjson   1      10m
+
+$ kubectl apply -f myapp/myapp.yaml
+$ kubectl describe pod -l app=myapp
+...
+Events:
+  Normal  Scheduled  default-scheduler  Successfully assigned nboti/myapp-68fcc568b4-8rzhp to sapi-worker2
+  Normal  Pulling    kubelet            Pulling image "boti13/protected-image:notes-api"
+  Normal  Pulled     kubelet            Successfully pulled image "boti13/protected-image:notes-api" in 4.148s
+  Normal  Created    kubelet            Container created
+  Normal  Started    kubelet            Container started
+
+$ curl -s https://myapp.nboti.sapi.click/health
+{"status":"ok","uptime":458}
+
+$ curl -s -X POST https://myapp.nboti.sapi.click/notes \
+    -H 'Content-Type: application/json' \
+    -d '{"title":"lab 4","body":"served from a private image on k3s"}'
+{"id":"8bb4ce1e-563d-4355-9e9d-bd18f39ad52a","title":"lab 4","body":"served from a private image on k3s",...}
+
+$ curl -s https://protected.nboti.sapi.click/
+Hello there!
+```
+
+The notes are stored on a 1Gi `local-path` PVC, so they survive
+`kubectl rollout restart deploy/myapp`.
+
+### Pod vs ReplicaSet vs Deployment
+
+```console
+$ curl -sI https://pod.nboti.sapi.click        | head -1   # HTTP/2 200
+$ curl -sI https://deploy.nboti.sapi.click     | head -1   # HTTP/2 200
+$ curl -sI https://replicaset.nboti.sapi.click | head -1   # HTTP/2 200
+
+$ kubectl delete pod nginx; kubectl delete pod -l app=nginx-deploy; kubectl delete pod -l app=nginx-rs
+$ kubectl get pod nginx
+Error from server (NotFound): pods "nginx" not found      # nothing recreates a bare Pod
+$ kubectl get pods -o custom-columns=NAME:.metadata.name,OWNER:.metadata.ownerReferences[0].kind
+NAME                   OWNER
+nginx-599579cd-ks7m6   ReplicaSet                         # recreated by the Deployment's ReplicaSet
+nginx-v9tn5            ReplicaSet                         # recreated by the ReplicaSet
+nginx-x5mqf            ReplicaSet
+```
+
+The bare Pod was re-applied afterwards so `pod.nboti.sapi.click` stays up.
+
+---
+
 ## 1. The cluster you are deploying to
 
 Worth reading once, because several of these facts are the reason things fail:
